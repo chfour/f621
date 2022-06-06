@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import stat, os, errno, fuse
 from typing import Generator
 
