@@ -5,19 +5,27 @@ from typing import Generator
 
 fuse.fuse_python_api = (0, 2)
 
-FILES = {"/test": b"Hello, world!\n"}
 USERAGENT = "f621/1.0 (github.com/chfour)"
 
 class E6Post:
+    image = None
     def __init__(self, post_id: int, api="https://e621.net") -> None:
         self.post_id = post_id
         self.info_request = requests.get(f"{api}/posts/{post_id}.json", headers={"user-agent": USERAGENT})
         if not self.info_request.ok:
             raise RuntimeError(f"got {self.info_request.status_code} for #{post_id}, data={self.info_request.text!r}, path={self.info_request.url}")
-        self.data = self.info_request.json()
+        self.data = self.info_request.json()["post"]
+    
+    def get_image(self) -> bytes:
+        if self.image is None:
+            self.image = requests.get(self.data["file"]["url"], headers={"user-agent": USERAGENT})
+            if not self.image.ok:
+                raise RuntimeError(f"got {self.info_request.status_code} for image#{post_id}, data={self.info_request.text!r}, path={self.info_request.url}")
+        return self.image.content
 
 class TheFS(fuse.Fuse):
     postsdir = "/posts/"
+    files = {"/test": b"Hello, world!\n"}
     cache = {}
 
     def get_post(self, post_id: int) -> E6Post:
@@ -38,10 +46,10 @@ class TheFS(fuse.Fuse):
             st.st_mode = stat.S_IFDIR | 0o444
             st.st_nlink = 2
             print(f"getattr {path} -> {st.__dict__}")
-        elif path in FILES:
+        elif path in self.files:
             st.st_mode = stat.S_IFREG | 0o444
             st.st_nlink = 1
-            st.st_size = len(FILES[path])
+            st.st_size = len(self.files[path])
             print(f"getattr {path} -> {st.__dict__}")
         elif path.startswith(self.postsdir):
             try:
@@ -58,7 +66,7 @@ class TheFS(fuse.Fuse):
             
             st.st_mode = stat.S_IFREG | 0o444
             st.st_nlink = 1
-            st.st_size = len(post.info_request.content)
+            st.st_size = post.data["file"]["size"]
         else:
             print(f"getattr {path} -> ENOENT")
             return -errno.ENOENT
@@ -69,7 +77,7 @@ class TheFS(fuse.Fuse):
     def readdir(self, path, offset) -> Generator[fuse.Direntry, None, None] | int:
         dir_listing = [".", ".."]
         if path == "/":
-            dir_listing += [self.postsdir[1:-1]] + [e[1:] for e in FILES]
+            dir_listing += [self.postsdir[1:-1]] + [e[1:] for e in self.files]
         elif path == self.postsdir[:-1]:
             pass
         else:
@@ -81,7 +89,7 @@ class TheFS(fuse.Fuse):
             yield fuse.Direntry(f)
 
     def open(self, path, flags) -> int:
-        if path in FILES:
+        if path in self.files:
             print(f"open {path} {flags:b} -> 0 (OK)")
             return 0
         elif path.startswith(self.postsdir):
@@ -108,8 +116,8 @@ class TheFS(fuse.Fuse):
             return -errno.ENOENT
 
     def read(self, path, size, offset) -> bytes | int:
-        if path in FILES:
-            buf = FILES[path][offset:offset+size]
+        if path in self.files:
+            buf = self.files[path][offset:offset+size]
             print(f"read {path} s{size} o{offset} -> bytes[{len(buf)}]")
             return buf
         elif path.startswith(self.postsdir):
@@ -123,9 +131,15 @@ class TheFS(fuse.Fuse):
                 post = self.get_post(post_id)
             except RuntimeError as e:
                 print(f"getattr {path} (error fetching post: {e}) -> ENOENT")
-                return -errno.ENOENT
+                return -errno.EIO
 
-            buf = post.info_request.content[offset:offset+size]
+            try:
+                image_data = post.get_image()
+            except RuntimeError as e:
+                print(f"getattr {path} (error fetching post image: {e}) -> ENOENT")
+                return -errno.EIO
+
+            buf = image_data[offset:offset+size]
             print(f"read {path} s{size} o{offset} -> bytes[{len(buf)}]")
             return buf
         else:
@@ -133,18 +147,18 @@ class TheFS(fuse.Fuse):
             return -errno.ENOENT
 
     def truncate(self, path, size) -> int:
-        if path not in FILES:
+        if path not in self.files:
             print(f"truncate {path} {size} -> EACCES")
             return -errno.EACCES
         print(f"truncate {path} {size} -> 0 (OK)")
-        FILES[path] = FILES[path][:size]
+        self.files[path] = self.files[path][:size]
         return 0
 
     def write(self, path, buf, offset) -> int:
-        if path not in FILES:
+        if path not in self.files:
             print(f"write {path} {buf} o{offset} -> EACCES")
             return -errno.EACCES
-        FILES[path] = FILES[path][:offset] + buf + FILES[path][offset+len(buf):]
+        self.files[path] = self.files[path][:offset] + buf + self.files[path][offset+len(buf):]
         print(f"write {path} {buf} o{offset} -> {buf}")
         return len(buf)
 
