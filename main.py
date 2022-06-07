@@ -17,6 +17,7 @@ class E6Post:
         self.data = self.info_request.json()
 
 class TheFS(fuse.Fuse):
+    postsdir = "/posts/"
     cache = {}
 
     def get_post(self, post_id: int) -> E6Post:
@@ -33,14 +34,18 @@ class TheFS(fuse.Fuse):
             st.st_mode = stat.S_IFDIR | 0o777
             st.st_nlink = 2
             print(f"getattr {path} -> {st.__dict__}")
+        elif path == self.postsdir[:-1]:
+            st.st_mode = stat.S_IFDIR | 0o444
+            st.st_nlink = 2
+            print(f"getattr {path} -> {st.__dict__}")
         elif path in FILES:
-            st.st_mode = stat.S_IFREG | 0o555
+            st.st_mode = stat.S_IFREG | 0o444
             st.st_nlink = 1
             st.st_size = len(FILES[path])
             print(f"getattr {path} -> {st.__dict__}")
-        else:
+        elif path.startswith(self.postsdir):
             try:
-                post_id = int(path[1:])
+                post_id = int(path[len(self.postsdir):])
             except ValueError:
                 print(f"getattr {path} (not int) -> ENOENT")
                 return -errno.ENOENT
@@ -51,22 +56,37 @@ class TheFS(fuse.Fuse):
                 print(f"getattr {path} (error fetching post: {e}) -> ENOENT")
                 return -errno.ENOENT
             
-            st.st_mode = stat.S_IFREG | 0o555
+            st.st_mode = stat.S_IFREG | 0o444
             st.st_nlink = 1
             st.st_size = len(post.info_request.content)
+        else:
+            print(f"getattr {path} -> ENOENT")
+            return -errno.ENOENT
         
         print(f"getattr {path} -> {st.__dict__}")
         return st
 
-    def readdir(self, path, offset) -> Generator[fuse.Direntry, None, None]:
+    def readdir(self, path, offset) -> Generator[fuse.Direntry, None, None] | int:
+        dir_listing = [".", ".."]
+        if path == "/":
+            dir_listing += [self.postsdir[1:-1]] + [e[1:] for e in FILES]
+        elif path == self.postsdir[:-1]:
+            pass
+        else:
+            print(f"readdir {path} o{offset} -> ENOENT")
+            return -errno.ENOENT
+        
         print(f"readdir {path} o{offset}")
-        for f in [".", ".."] + [e[1:] for e in FILES]:
+        for f in dir_listing:
             yield fuse.Direntry(f)
 
     def open(self, path, flags) -> int:
-        if path not in FILES:
+        if path in FILES:
+            print(f"open {path} {flags:b} -> 0 (OK)")
+            return 0
+        elif path.startswith(self.postsdir):
             try:
-                post_id = int(path[1:])
+                post_id = int(path[len(self.postsdir):])
             except ValueError:
                 print(f"open {path} (not int) -> ENOENT")
                 return -errno.ENOENT
@@ -83,21 +103,18 @@ class TheFS(fuse.Fuse):
             
             print(f"open {path} #{post_id} {flags:b} -> 0 (OK)")
             return 0
-
-        #if flags & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR) != os.O_RDONLY:
-        #    print(f"open {path} {flags:b} -> EACCES")
-        #    return -errno.EACCES
-        
-        print(f"open {path} {flags:b} -> 0 (OK)")
-        return 0
+        else:
+            print(f"open {path} -> ENOENT")
+            return -errno.ENOENT
 
     def read(self, path, size, offset) -> bytes | int:
         if path in FILES:
             buf = FILES[path][offset:offset+size]
             print(f"read {path} s{size} o{offset} -> bytes[{len(buf)}]")
-        else:
+            return buf
+        elif path.startswith(self.postsdir):
             try:
-                post_id = int(path[1:])
+                post_id = int(path[len(self.postsdir):])
             except ValueError:
                 print(f"getattr {path} (not int) -> ENOENT")
                 return -errno.ENOENT
@@ -109,10 +126,11 @@ class TheFS(fuse.Fuse):
                 return -errno.ENOENT
 
             buf = post.info_request.content[offset:offset+size]
-            
             print(f"read {path} s{size} o{offset} -> bytes[{len(buf)}]")
-            
-        return buf
+            return buf
+        else:
+            print(f"getattr {path} -> ENOENT")
+            return -errno.ENOENT
 
     def truncate(self, path, size) -> int:
         print(f"truncate {path} {size} -> 0 (OK)")
