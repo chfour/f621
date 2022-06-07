@@ -7,9 +7,21 @@ fuse.fuse_python_api = (0, 2)
 
 USERAGENT = "f621/1.0 (github.com/chfour)"
 
+
 class E6Post:
     image = None
-    def __init__(self, post_id: int, api="https://e621.net") -> None:
+
+    @classmethod
+    def from_json(cls, data: dict) -> "E6Post":
+        new_object = cls(None)
+        new_object.data = data
+        new_object.post_id = new_object.data["id"]
+        new_object.info_request = None
+        return new_object
+    
+    def __init__(self, post_id: int | None, api="https://e621.net") -> None:
+        if post_id is None: return
+        
         self.post_id = post_id
         self.info_request = requests.get(f"{api}/posts/{post_id}.json", headers={"user-agent": USERAGENT})
         if not self.info_request.ok:
@@ -24,15 +36,32 @@ class E6Post:
         return self.image.content
 
 class TheFS(fuse.Fuse):
+    api = "https://e621.net"
     postsdir = "/posts/"
     files = {"/test": b"Hello, world!\n"}
     cache = {}
+
+    def load_page(self, page_no: int | str, tags="", limit=10) -> list:
+        r = requests.get(f"{self.api}/posts.json", params={"limit": limit, "page": str(page_no), "tags": tags}, headers={"user-agent": USERAGENT})
+        if not r.ok:
+            raise RuntimeError(f"got {r.status_code} for /posts, tags={tags!r} page={page_no} limit={limit}, data={r.text!r}, path={r.url}")
+
+        data = r.json()
+        print(f"caching {len(data['posts'])} posts")
+        
+        page_listing = []
+        for post in data["posts"]:
+            post = E6Post.from_json(post)
+            self.cache[post.data["id"]] = post
+            page_listing.append(post)
+        
+        return page_listing
 
     def get_post(self, post_id: int) -> E6Post:
         if post_id in self.cache:
             return self.cache[post_id]
         
-        self.cache[post_id] = E6Post(post_id)
+        self.cache[post_id] = E6Post(post_id, api=self.api)
         return self.cache[post_id]
 
     def getattr(self, path: str) -> fuse.Stat | int:
@@ -79,12 +108,18 @@ class TheFS(fuse.Fuse):
         if path == "/":
             dir_listing += [self.postsdir[1:-1]] + [e[1:] for e in self.files]
         elif path == self.postsdir[:-1]:
-            pass
+            try:
+                page = self.load_page(1, tags="rating:safe ralsei")
+                print(page)
+            except RuntimeError as e:
+                print(f"{path} (error fetching post: {e}) -> ENOENT")
+                return -errno.EIO
+            dir_listing += [str(p.data["id"]) for p in page]
         else:
             print(f"readdir {path} o{offset} -> ENOENT")
             return -errno.ENOENT
         
-        print(f"readdir {path} o{offset}")
+        print(f"readdir {path} o{offset} -> {dir_listing}")
         for f in dir_listing:
             yield fuse.Direntry(f)
 
