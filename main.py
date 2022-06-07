@@ -1,25 +1,59 @@
 #!/usr/bin/env python3
-import stat, os, errno, fuse
+import stat, os, errno, fuse, requests
+from time import sleep
 from typing import Generator
 
 fuse.fuse_python_api = (0, 2)
 
 FILES = {"/test": b"Hello, world!\n"}
+USERAGENT = "f621/1.0 (github.com/chfour)"
+
+class E6Post:
+    def __init__(self, post_id: int, api="https://e621.net") -> None:
+        self.post_id = post_id
+        self.info_request = requests.get(f"{api}/posts/{post_id}.json", headers={"user-agent": USERAGENT})
+        if not self.info_request.ok:
+            raise RuntimeError(f"got {self.info_request.status_code} for #{post_id}, data={self.info_request.text!r}, path={self.info_request.url}")
+        self.data = self.info_request.json()
 
 class TheFS(fuse.Fuse):
+    cache = {}
+
+    def get_post(self, post_id: int) -> E6Post:
+        if post_id in self.cache:
+            return self.cache[post_id]
+        
+        self.cache[post_id] = E6Post(post_id)
+        return self.cache[post_id]
+
     def getattr(self, path: str) -> fuse.Stat | int:
         st = fuse.Stat()
         
         if path == "/":
             st.st_mode = stat.S_IFDIR | 0o777
             st.st_nlink = 2
+            print(f"getattr {path} -> {st.__dict__}")
         elif path in FILES:
-            st.st_mode = stat.S_IFREG | 0o777
+            st.st_mode = stat.S_IFREG | 0o555
             st.st_nlink = 1
             st.st_size = len(FILES[path])
+            print(f"getattr {path} -> {st.__dict__}")
         else:
-            print(f"getattr {path} -> ENOENT")
-            return -errno.ENOENT
+            try:
+                post_id = int(path[1:])
+            except ValueError:
+                print(f"getattr {path} (not int) -> ENOENT")
+                return -errno.ENOENT
+            
+            try:
+                post = self.get_post(post_id)
+            except RuntimeError as e:
+                print(f"getattr {path} (error fetching post: {e}) -> ENOENT")
+                return -errno.ENOENT
+            
+            st.st_mode = stat.S_IFREG | 0o555
+            st.st_nlink = 1
+            st.st_size = len(post.info_request.content)
         
         print(f"getattr {path} -> {st.__dict__}")
         return st
@@ -31,8 +65,24 @@ class TheFS(fuse.Fuse):
 
     def open(self, path, flags) -> int:
         if path not in FILES:
-            print(f"open {path} {flags:b} -> ENOENT")
-            return -errno.ENOENT
+            try:
+                post_id = int(path[1:])
+            except ValueError:
+                print(f"open {path} (not int) -> ENOENT")
+                return -errno.ENOENT
+
+            if flags & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR) != os.O_RDONLY:
+                print(f"open {path} {flags:b} (not readonly) -> EACCES")
+                return -errno.EACCES
+            
+            try:
+                self.get_post(post_id)
+            except RuntimeError as e:
+                print(f"open {path} (error fetching post: {e}) -> ENOENT")
+                return -errno.ENOENT
+            
+            print(f"open {path} #{post_id} {flags:b} -> 0 (OK)")
+            return 0
 
         #if flags & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR) != os.O_RDONLY:
         #    print(f"open {path} {flags:b} -> EACCES")
@@ -42,12 +92,26 @@ class TheFS(fuse.Fuse):
         return 0
 
     def read(self, path, size, offset) -> bytes | int:
-        if path not in FILES:
-            print(f"read {path} s{size} o{offset} -> ENOENT")
-            return -errno.ENOENT
+        if path in FILES:
+            buf = FILES[path][offset:offset+size]
+            print(f"read {path} s{size} o{offset} -> bytes[{len(buf)}]")
+        else:
+            try:
+                post_id = int(path[1:])
+            except ValueError:
+                print(f"getattr {path} (not int) -> ENOENT")
+                return -errno.ENOENT
+            
+            try:
+                post = self.get_post(post_id)
+            except RuntimeError as e:
+                print(f"getattr {path} (error fetching post: {e}) -> ENOENT")
+                return -errno.ENOENT
 
-        buf = FILES[path][offset:size]
-        print(f"read {path} s{size} o{offset} -> bytes[{len(buf)}]")
+            buf = post.info_request.content[offset:offset+size]
+            
+            print(f"read {path} s{size} o{offset} -> bytes[{len(buf)}]")
+            
         return buf
 
     def truncate(self, path, size) -> int:
