@@ -133,11 +133,17 @@ class TheFS(fuse.Fuse):
             return -errno.ENOENT
 
     def truncate(self, path, size) -> int:
+        if path not in FILES:
+            print(f"truncate {path} {size} -> EACCES")
+            return -errno.EACCES
         print(f"truncate {path} {size} -> 0 (OK)")
         FILES[path] = FILES[path][:size]
         return 0
 
     def write(self, path, buf, offset) -> int:
+        if path not in FILES:
+            print(f"write {path} {buf} o{offset} -> EACCES")
+            return -errno.EACCES
         FILES[path] = FILES[path][:offset] + buf + FILES[path][offset+len(buf):]
         print(f"write {path} {buf} o{offset} -> {buf}")
         return len(buf)
