@@ -30,6 +30,11 @@ class E6Post:
         if not self.info_request.ok:
             raise RuntimeError(f"got {self.info_request.status_code} for #{post_id}, data={self.info_request.text!r}, path={self.info_request.url}")
         self.data = self.info_request.json()["post"]
+
+    def update_data(self, data: dict) -> None:
+        self.data = data
+        self.post_id = self.data["id"]
+        self.info_request = None
     
     def get_image(self, fmt="file") -> bytes:
         if fmt not in self.images:
@@ -63,8 +68,12 @@ class TheFS(fuse.Fuse):
         
         page_listing = []
         for post in data["posts"]:
-            post = E6Post.from_json(post)
-            self.cache[post.data["id"]] = post
+            if post["id"] in self.cache:
+                self.cache[post["id"]].update_data(post)
+                post = self.cache[post["id"]]
+            else:
+                post = E6Post.from_json(post)
+                self.cache[post.data["id"]] = post
             page_listing.append(post)
         
         return page_listing
