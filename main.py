@@ -9,7 +9,8 @@ USERAGENT = "f621/1.0 (github.com/chfour)"
 
 
 class E6Post:
-    image = None
+    def __repr__(self) -> str:
+        return f"E6Post#{self.data['id']}"
 
     @classmethod
     def from_json(cls, data: dict) -> "E6Post":
@@ -17,10 +18,12 @@ class E6Post:
         new_object.data = data
         new_object.post_id = new_object.data["id"]
         new_object.info_request = None
+        new_object.images = {}
         return new_object
     
     def __init__(self, post_id: int | None, api="https://e621.net") -> None:
         if post_id is None: return
+        images = {}
         
         self.post_id = post_id
         self.info_request = requests.get(f"{api}/posts/{post_id}.json", headers={"user-agent": USERAGENT})
@@ -28,18 +31,27 @@ class E6Post:
             raise RuntimeError(f"got {self.info_request.status_code} for #{post_id}, data={self.info_request.text!r}, path={self.info_request.url}")
         self.data = self.info_request.json()["post"]
     
-    def get_image(self) -> bytes:
-        if self.image is None:
-            self.image = requests.get(self.data["file"]["url"], headers={"user-agent": USERAGENT})
-            if not self.image.ok:
-                raise RuntimeError(f"got {self.info_request.status_code} for image#{post_id}, data={self.info_request.text!r}, path={self.info_request.url}")
-        return self.image.content
+    def get_image(self, fmt="file") -> bytes:
+        if fmt not in self.images:
+            image = requests.get(self.data[fmt]["url"], headers={"user-agent": USERAGENT})
+            if not image.ok:
+                raise RuntimeError(f"got {self.info_request.status_code} for image:{fmt}#{post_id}, data={image.text!r}, path={image.url}")
+            self.images[fmt] = image
+        return self.images[fmt].content
+
+    def get_image_size(self, fmt="file") -> int:
+        if fmt == "file":
+            return self.data["file"]["size"]
+        else:
+            return len(self.get_image(fmt=fmt))
+
 
 class TheFS(fuse.Fuse):
     api = "https://e621.net"
     postsdir = "/posts/"
     files = {"/test": b"Hello, world!\n"}
     cache = {}
+    
 
     def load_page(self, page_no: int | str, tags="", limit=10) -> list:
         r = requests.get(f"{self.api}/posts.json", params={"limit": limit, "page": str(page_no), "tags": tags}, headers={"user-agent": USERAGENT})
@@ -95,7 +107,7 @@ class TheFS(fuse.Fuse):
             
             st.st_mode = stat.S_IFREG | 0o444
             st.st_nlink = 1
-            st.st_size = post.data["file"]["size"]
+            st.st_size = post.get_image_size(fmt="preview")
         else:
             print(f"getattr {path} -> ENOENT")
             return -errno.ENOENT
@@ -169,7 +181,7 @@ class TheFS(fuse.Fuse):
                 return -errno.EIO
 
             try:
-                image_data = post.get_image()
+                image_data = post.get_image(fmt="preview")
             except RuntimeError as e:
                 print(f"getattr {path} (error fetching post image: {e}) -> ENOENT")
                 return -errno.EIO
