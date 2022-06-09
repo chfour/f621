@@ -49,7 +49,7 @@ class E6Post:
 class TheFS(fuse.Fuse):
     api = "https://e621.net"
     postsdir = "/posts/"
-    files = {"/tags": b"rating:safe ralsei\n"}
+    files = {"/tags": b"rating:safe ralsei\n", "/size": b"sample\n"}
     cache = {}
     
 
@@ -104,10 +104,15 @@ class TheFS(fuse.Fuse):
             except RuntimeError as e:
                 print(f"getattr {path} (error fetching post: {e}) -> ENOENT")
                 return -errno.ENOENT
+
+            image_size = self.files["/size"].decode("utf-8").strip()
+            if image_size not in ["file", "sample", "preview"]:
+                image_size = "sample"
+            self.files["/size"] = (image_size + "\n").encode("utf-8")
             
             st.st_mode = stat.S_IFREG | 0o444
             st.st_nlink = 1
-            st.st_size = post.get_image_size(fmt="preview")
+            st.st_size = post.get_image_size(fmt=image_size)
         else:
             print(f"getattr {path} -> ENOENT")
             return -errno.ENOENT
@@ -183,8 +188,13 @@ class TheFS(fuse.Fuse):
                 print(f"getattr {path} (error fetching post: {e}) -> ENOENT")
                 return -errno.EIO
 
+            image_size = self.files["/size"].decode("utf-8").strip()
+            if image_size not in ["file", "sample", "preview"]:
+                image_size = "sample"
+            self.files["/size"] = (image_size + "\n").encode("utf-8")
+
             try:
-                image_data = post.get_image(fmt="preview")
+                image_data = post.get_image(fmt=image_size)
             except RuntimeError as e:
                 print(f"getattr {path} (error fetching post image: {e}) -> ENOENT")
                 return -errno.EIO
