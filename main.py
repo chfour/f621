@@ -54,7 +54,7 @@ class E6Post:
 class TheFS(fuse.Fuse):
     api = "https://e621.net"
     postsdir = "/posts/"
-    files = {"/tags": b"rating:safe ralsei\n", "/size": b"sample\n"}
+    files = {"/tags": b"rating:safe ralsei\n", "/size": b"sample\n", "/page": b"1\n"}
     cache = {}
     
 
@@ -136,9 +136,12 @@ class TheFS(fuse.Fuse):
         elif path == self.postsdir[:-1]:
             tags = self.files["/tags"].decode("utf-8").strip()
             self.files["/tags"] = (tags + "\n").encode("utf-8")
+
+            page = int(self.files["/page"].decode("utf-8").strip())
+            self.files["/page"] = (str(page) + "\n").encode("utf-8")
             
             try:
-                page = self.load_page(1, tags=tags)
+                page = self.load_page(page, tags=tags)
                 print(page)
             except RuntimeError as e:
                 print(f"{path} (error fetching post: {e}) -> ENOENT")
